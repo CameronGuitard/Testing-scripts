@@ -1,0 +1,8 @@
+name: Test Auto label
+on: pull_request
+jobs:
+  get_branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Echo Pull Request Branch
+        run: echo "The pull request originated from branch: ${{ github.head_ref }}"
