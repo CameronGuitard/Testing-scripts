@@ -4,7 +4,11 @@ on:
   pull_request:
     types: [closed]
     branches:
-      - staging   # only run when PRs are merged into staging
+      - staging
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
   cherry-pick:
@@ -20,15 +24,20 @@ jobs:
       - name: Install GitHub CLI
         uses: cli/cli-action@v2
 
+      - name: Authenticate GitHub CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Fetch all branches
+        run: git fetch origin
+
       - name: Get PR number
         run: echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
 
       - name: Create new branch
         run: |
-          BASE=preprod   # target branch for the new PR
+          BASE=preprod
           NEW_BRANCH=cherry-pick-pr-${PR_NUMBER}-to-$BASE
-          git checkout $BASE
-          git pull origin $BASE
+          git checkout origin/$BASE
           git checkout -b $NEW_BRANCH
           echo "NEW_BRANCH=$NEW_BRANCH" >> $GITHUB_ENV
 
@@ -36,18 +45,16 @@ jobs:
         run: |
           COMMITS=$(gh pr view $PR_NUMBER --json commits --jq '.commits[].commit.oid')
           for c in $COMMITS; do
-            # Skip merge commits (more than 1 parent)
             PARENTS=$(git rev-list --parents -n 1 $c | wc -w)
             if [ $PARENTS -gt 2 ]; then
               echo "Skipping merge commit $c"
               continue
             fi
-            git cherry-pick $c || { git cherry-pick --abort; exit 1; }
+            git cherry-pick $c || { echo "Conflict on $c, resolve manually"; exit 1; }
           done
 
       - name: Push branch
-        run: |
-          git push origin $NEW_BRANCH
+        run: git push origin $NEW_BRANCH
 
       - name: Open new PR
         run: |
