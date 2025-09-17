@@ -4,11 +4,18 @@ on:
   pull_request:
     types: [closed]
     branches:
-      - staging   # only run when PRs are merged into staging
+      - staging
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
   cherry-pick:
-    if: github.event.pull_request.merged == true
+    # Run only if PR was merged and has the 'create_preprod-pr' label
+    if: >
+      github.event.pull_request.merged == true &&
+      contains(toJson(github.event.pull_request.labels), 'create_preprod-pr')
     runs-on: ubuntu-latest
 
     steps:
@@ -17,42 +24,94 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install GitHub CLI
-        uses: cli/cli-action@v2
+      - name: Authenticate GitHub CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Fetch all branches
+        run: git fetch origin
 
       - name: Get PR number
         run: echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
 
       - name: Create new branch
         run: |
-          BASE=preprod   # target branch for the new PR
+          BASE=preprod
           NEW_BRANCH=cherry-pick-pr-${PR_NUMBER}-to-$BASE
-          git checkout $BASE
-          git pull origin $BASE
+          git checkout origin/$BASE
           git checkout -b $NEW_BRANCH
           echo "NEW_BRANCH=$NEW_BRANCH" >> $GITHUB_ENV
 
+      - name: Stop if no commits exist to cherry-pick
+        run: |
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+          COMMITS=$(git rev-list $BASE_SHA..$HEAD_SHA)
+
+          if [ -z "$COMMITS" ]; then
+            echo "❌ No commits to cherry-pick. Deleting branch $NEW_BRANCH."
+            git checkout preprod
+            git branch -D $NEW_BRANCH || true
+            git push origin --delete $NEW_BRANCH || true
+            exit 0
+          fi
+
       - name: Cherry-pick commits (ignore merge commits)
         run: |
-          COMMITS=$(gh pr view $PR_NUMBER --json commits --jq '.commits[].commit.oid')
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+
+          COMMITS=$(git rev-list $BASE_SHA..$HEAD_SHA)
+          SKIPPED_COMMITS=""
+          PICKED_COMMITS=0
+
           for c in $COMMITS; do
-            # Skip merge commits (more than 1 parent)
             PARENTS=$(git rev-list --parents -n 1 $c | wc -w)
+            COMMIT_INFO="$(git log -1 --pretty=format:'%h %s' $c)"
+
             if [ $PARENTS -gt 2 ]; then
               echo "Skipping merge commit $c"
+              SKIPPED_COMMITS="$SKIPPED_COMMITS\n- $COMMIT_INFO (merge commit)"
               continue
             fi
-            git cherry-pick $c || { git cherry-pick --abort; exit 1; }
+
+            if ! git cherry-pick $c; then
+              echo "Conflict on $c, skipping commit"
+              git cherry-pick --abort
+              SKIPPED_COMMITS="$SKIPPED_COMMITS\n- $COMMIT_INFO (conflict)"
+              continue
+            fi
+
+            PICKED_COMMITS=$((PICKED_COMMITS+1))
           done
 
+          # Save skipped commits safely with multiline support
+          echo "SKIPPED_COMMITS<<EOF" >> $GITHUB_ENV
+          echo -e "$SKIPPED_COMMITS" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          echo "PICKED_COMMITS=$PICKED_COMMITS" >> $GITHUB_ENV
+
       - name: Push branch
-        run: |
-          git push origin $NEW_BRANCH
+        run: git push origin $NEW_BRANCH
 
       - name: Open new PR
+        id: open_pr
         run: |
-          gh pr create \
+          BODY_FILE=$(mktemp)
+
+          echo "This PR was automatically created by cherry-picking commits from #$PR_NUMBER (ignoring merge commits)." > $BODY_FILE
+
+          if [ -n "$SKIPPED_COMMITS" ]; then
+            echo -e "\n⚠️ The following commits were skipped:\n$SKIPPED_COMMITS" >> $BODY_FILE
+          fi
+
+          PR_URL=$(gh pr create \
             --title "Cherry-pick of #$PR_NUMBER to preprod" \
-            --body "This PR was automatically created by cherry-picking commits from #$PR_NUMBER (ignoring merge commits)." \
             --base preprod \
-            --head $NEW_BRANCH
+            --head $NEW_BRANCH \
+            -F $BODY_FILE)
+
+          echo "PR_URL=$PR_URL" >> $GITHUB_ENV
+
+      - name: Add auto-cherry-pick label
+        run: gh pr edit "$PR_URL" --add-label "auto-cherry-pick"
