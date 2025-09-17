@@ -84,7 +84,7 @@ jobs:
             PICKED_COMMITS=$((PICKED_COMMITS+1))
           done
 
-          # Save skipped commits safely
+          # Save skipped commits safely with multiline support
           echo "SKIPPED_COMMITS<<EOF" >> $GITHUB_ENV
           echo -e "$SKIPPED_COMMITS" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
@@ -97,22 +97,21 @@ jobs:
       - name: Open new PR
         id: open_pr
         run: |
-          BODY="This PR was automatically created by cherry-picking commits from #$PR_NUMBER (ignoring merge commits).
+          BODY_FILE=$(mktemp)
 
-          "
-          if [ -n "${SKIPPED_COMMITS}" ]; then
-            BODY="$BODY\n⚠️ The following commits were skipped:\n${SKIPPED_COMMITS}"
+          echo "This PR was automatically created by cherry-picking commits from #$PR_NUMBER (ignoring merge commits)." > $BODY_FILE
+
+          if [ -n "$SKIPPED_COMMITS" ]; then
+            echo -e "\n⚠️ The following commits were skipped:\n$SKIPPED_COMMITS" >> $BODY_FILE
           fi
 
-          URL=$(gh pr create \
+          PR_URL=$(gh pr create \
             --title "Cherry-pick of #$PR_NUMBER to preprod" \
-            --body "$BODY" \
             --base preprod \
             --head $NEW_BRANCH \
-            --json url \
-            --jq '.url')
+            -F $BODY_FILE)
 
-          echo "PR_URL=$URL" >> $GITHUB_ENV
+          echo "PR_URL=$PR_URL" >> $GITHUB_ENV
 
       - name: Add auto-cherry-pick label
         run: gh pr edit "$PR_URL" --add-label "auto-cherry-pick"
