@@ -4,7 +4,7 @@ on:
   pull_request:
     types: [closed]
     branches:
-      - staging   # only run when PRs are merged into staging
+      - staging
 
 permissions:
   contents: write
@@ -35,11 +35,25 @@ jobs:
 
       - name: Create new branch
         run: |
-          BASE=preprod   # target branch for the new PR
+          BASE=preprod
           NEW_BRANCH=cherry-pick-pr-${PR_NUMBER}-to-$BASE
           git checkout origin/$BASE
           git checkout -b $NEW_BRANCH
           echo "NEW_BRANCH=$NEW_BRANCH" >> $GITHUB_ENV
+
+      - name: Stop if no commits exist to cherry-pick
+        run: |
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+          COMMITS=$(git rev-list $BASE_SHA..$HEAD_SHA)
+
+          if [ -z "$COMMITS" ]; then
+            echo "❌ No commits to cherry-pick. Deleting branch $NEW_BRANCH."
+            git checkout preprod
+            git branch -D $NEW_BRANCH || true
+            git push origin --delete $NEW_BRANCH || true
+            exit 0
+          fi
 
       - name: Cherry-pick commits (ignore merge commits)
         run: |
@@ -70,14 +84,12 @@ jobs:
             PICKED_COMMITS=$((PICKED_COMMITS+1))
           done
 
-          echo -e "SKIPPED_COMMITS=$SKIPPED_COMMITS" >> $GITHUB_ENV
-          echo "PICKED_COMMITS=$PICKED_COMMITS" >> $GITHUB_ENV
+          # Save skipped commits safely
+          echo "SKIPPED_COMMITS<<EOF" >> $GITHUB_ENV
+          echo -e "$SKIPPED_COMMITS" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
 
-      - name: Stop if no commits were cherry-picked
-        if: env.PICKED_COMMITS == '0'
-        run: |
-          echo "❌ No commits were cherry-picked. Skipping PR creation."
-          exit 0
+          echo "PICKED_COMMITS=$PICKED_COMMITS" >> $GITHUB_ENV
 
       - name: Push branch
         run: git push origin $NEW_BRANCH
@@ -104,4 +116,3 @@ jobs:
 
       - name: Add auto-cherry-pick label
         run: gh pr edit "$PR_URL" --add-label "auto-cherry-pick"
-
