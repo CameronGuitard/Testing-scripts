@@ -43,9 +43,12 @@ jobs:
 
       - name: Cherry-pick commits (ignore merge commits)
         run: |
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+
+          COMMITS=$(git rev-list $BASE_SHA..$HEAD_SHA)
           SKIPPED_COMMITS=""
           PICKED_COMMITS=0
-          COMMITS=$(gh pr view $PR_NUMBER --json commits --jq '.commits[].commit.oid')
 
           for c in $COMMITS; do
             PARENTS=$(git rev-list --parents -n 1 $c | wc -w)
@@ -101,3 +104,4 @@ jobs:
 
       - name: Add auto-cherry-pick label
         run: gh pr edit "$PR_URL" --add-label "auto-cherry-pick"
+
